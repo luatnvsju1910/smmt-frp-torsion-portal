@@ -1,0 +1,38 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Operating system & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Large Manuscript Word documents & locks
+*.docx
+~$*.docx
+*.doc
+
+# Scratch & temporary media
+scratch/
+.tempmediaStorage/
+test_*.png
+catboost_info/
+logs/*.log
+
+# Large raw datasets not required for inference
+# (Models are already trained and exported in ml_out/)
+SMMT_parametric_5000_onlyCFRP.csv
+*.mat
+*.asv
+
+# Deployment archives
+*.zip

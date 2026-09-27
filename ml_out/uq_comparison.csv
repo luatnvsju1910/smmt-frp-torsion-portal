@@ -1,0 +1,4 @@
+,coverage_%,mean_width
+split_conformal,92.2,5.063157085302111
+CQR,90.9,19.769474223469256
+NGBoost_conformal,91.3,9.7540492051662
