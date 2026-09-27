@@ -112,15 +112,7 @@ Open your browser at `http://localhost:8501`.
 If you use this portal or surrogate models in your academic research, please cite our manuscript:
 
 ```bibtex
-@article{smmt_frp_torsion_2026,
-  title={Physics-Informed Machine Learning Surrogate and Conformal Uncertainty Quantification for Torsional Capacity of FRP-Strengthened RC Beams},
-  author={[Author Names]},
-  journal={[SCIE Q1 Journal Name]},
-  year={2026},
-  volume={[Volume]},
-  pages={[Pages]},
-  doi={[DOI]}
-}
+
 ```
 
 ---
