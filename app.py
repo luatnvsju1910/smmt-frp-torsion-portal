@@ -523,16 +523,25 @@ def predict_beam_capacity(feature_vector: dict, model_name: str = "Stacking Ense
     tu_min = float(np.exp(pred_log - q_val))
     tu_max = float(np.exp(pred_log + q_val))
     
-    # Unstrengthened RC Baseline (rho_f = 0, wf_sf = 0)
-    x_unstr = x_in.copy()
-    x_unstr[0, FEATS.index("rho_f")] = 0.0
-    x_unstr[0, FEATS.index("wf_sf")] = 0.0
-    tu_unstr = float(np.exp(model.predict(x_unstr)[0]))
-    
-    frp_gain = max(0.0, tu_pred - tu_unstr)
-    frp_gain_pct = (frp_gain / tu_unstr * 100.0) if tu_unstr > 0 else 0.0
-    
-    # Extrapolation Check
+    # Multivariate Applicability Domain Check (Mahalanobis Distance D^2)
+    d2 = 0.0
+    d2_thresh = 18.307
+    is_mahalanobis_valid = True
+    if META and "mahalanobis" in META:
+        mu = np.array(META["mahalanobis"]["mean"])
+        inv_cov = np.array(META["mahalanobis"]["inv_cov"])
+        d2_thresh = float(META["mahalanobis"].get("threshold", 18.307))
+        diff = x_in[0] - mu
+        d2 = float(diff @ inv_cov @ diff)
+        is_mahalanobis_valid = bool(d2 <= d2_thresh)
+
+    # Physical Aspect Ratio Constraint: a = h/b in [1.0, 2.0]
+    b_val = float(feature_vector.get("b", 1.0))
+    h_val = float(feature_vector.get("h", 1.0))
+    aspect = h_val / b_val if b_val > 0 else 1.0
+    aspect_valid = bool(1.0 <= aspect <= 2.0)
+
+    # Marginal Bounds Check
     out_of_bounds = []
     if META and "bounds" in META:
         for f in FEATS:
@@ -542,16 +551,20 @@ def predict_beam_capacity(feature_vector: dict, model_name: str = "Stacking Ense
                 if val < b_info["min"] or val > b_info["max"]:
                     out_of_bounds.append((f, val, b_info["min"], b_info["max"]))
                     
+    is_in_domain = bool(is_mahalanobis_valid and aspect_valid and (len(out_of_bounds) == 0))
+
     return {
         "Tu": tu_pred,
         "Tu_min": tu_min,
         "Tu_max": tu_max,
-        "Tu_unstr": tu_unstr,
-        "frp_gain": frp_gain,
-        "frp_gain_pct": frp_gain_pct,
         "conf_level": conf_level,
+        "d2": d2,
+        "d2_thresh": d2_thresh,
+        "is_mahalanobis_valid": is_mahalanobis_valid,
+        "aspect": aspect,
+        "aspect_valid": aspect_valid,
         "out_of_bounds": out_of_bounds,
-        "is_in_domain": len(out_of_bounds) == 0,
+        "is_in_domain": is_in_domain,
         "x_vector": x_in
     }
 
@@ -818,9 +831,10 @@ with tab_design:
         sqrt_fc = np.sqrt(inp_fc)
         frp_stiffness = calc_Efeq * calc_rho_f
         
-        # Physics-Derived Derived Features Card
+        # Derived Structural Descriptors (Display Only — Not Model Inputs)
         st.markdown('<div class="paper-card" style="padding:14px 18px;">', unsafe_allow_html=True)
-        st.markdown("<div style='font-size:0.82rem; font-weight:700; color:#475569; letter-spacing:0.04em; text-transform:uppercase; margin-bottom:8px;'>Physics-Derived Geometric & Mechanical Parameters</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.82rem; font-weight:700; color:#1e293b; letter-spacing:0.04em; text-transform:uppercase; margin-bottom:2px;'>Derived Structural Quantities (Display Only — Not Model Inputs)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:0.75rem; color:#64748b; margin-bottom:10px;'><em>Note: Deployed surrogate models strictly operate on the ten physical inputs (f'c, b, h, fyl, fyt, rho_l, rho_t, rho_f, Ef, wf/sf). The derived quantities below (h/b, A0, ph, √f'c, Ef·rho_f) are computed solely for engineering inspection.</em></div>", unsafe_allow_html=True)
         col_d1, col_d2, col_d3, col_d4 = st.columns(4)
         with col_d1:
             st.metric("Aspect Ratio h/b", f"{aspect_ratio:.2f}")
@@ -839,21 +853,26 @@ with tab_design:
         try:
             pred_res = predict_beam_capacity(feat_vector, model_name=chosen_model, conf_level=chosen_uq.replace("%", ""))
             
-            # Domain of validity pill
+            # Domain of validity check (Multivariate Mahalanobis & Aspect Ratio)
             if pred_res["is_in_domain"]:
-                st.markdown("<span class='status-pill-pass'>Applicability Domain: Within 5,000 SMMT Training Bounds</span>", unsafe_allow_html=True)
+                st.markdown(f"<span class='status-pill-pass'>Applicability Domain: Valid (Mahalanobis D² = {pred_res['d2']:.2f} ≤ {pred_res['d2_thresh']:.2f}, χ² 95%, df=10)</span>", unsafe_allow_html=True)
             else:
-                warn_msg = ", ".join([f"{item[0]}={item[1]:.2f} (domain [{item[2]:.1f}, {item[3]:.1f}])" for item in pred_res["out_of_bounds"]])
-                st.markdown(f"<span class='status-pill-warn'>Extrapolation Notice: {warn_msg}</span>", unsafe_allow_html=True)
+                warn_reasons = []
+                if not pred_res["is_mahalanobis_valid"]:
+                    warn_reasons.append(f"Mahalanobis D² = {pred_res['d2']:.2f} > {pred_res['d2_thresh']:.2f} (exceeds 95% training centroid manifold)")
+                if not pred_res["aspect_valid"]:
+                    warn_reasons.append(f"Aspect ratio h/b = {pred_res['aspect']:.2f} violates SMMT database range [1.0, 2.0]")
+                for item in pred_res["out_of_bounds"]:
+                    warn_reasons.append(f"{item[0]}={item[1]:.2f} outside [{item[2]:.1f}, {item[3]:.1f}]")
+                warn_msg = "; ".join(warn_reasons)
+                st.markdown(f"<span class='status-pill-warn'>⚠️ Extrapolation Notice: {warn_msg}</span>", unsafe_allow_html=True)
+                st.warning("⚠️ **Applicability Domain Alert**: This query lies outside the high-dimensional training envelope. In the unpopulated exterior domain, predictions carry higher surrogate uncertainty.")
 
             Tu_pred = pred_res["Tu"]
             Tu_min = pred_res["Tu_min"]
             Tu_max = pred_res["Tu_max"]
-            Tu_unstr = pred_res["Tu_unstr"]
-            frp_gain = pred_res["frp_gain"]
-            frp_gain_pct = pred_res["frp_gain_pct"]
             
-            # Primary Highlight Result Card
+            # Primary Highlight Result Card (Focus strictly on strengthened capacity Tu within domain)
             st.markdown(f"""
             <div class="result-hero-card">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
@@ -866,16 +885,19 @@ with tab_design:
                         </div>
                         <div style="color:#059669; font-size:0.92rem; font-weight:600; margin-top:6px;">
                             Split-Conformal {chosen_uq} Bound: [{Tu_min:.2f}, {Tu_max:.2f}] kN·m
-                            <span style="color:#64748b; font-weight:400; margin-left:4px;">(Margin ±{(Tu_max - Tu_min)/2:.2f} kN·m)</span>
+                            <span style="color:#64748b; font-weight:400; margin-left:4px;">(Interval Half-Width: ±{(Tu_max - Tu_min)/2:.2f} kN·m)</span>
+                        </div>
+                        <div style="font-size:0.75rem; color:#64748b; margin-top:4px;">
+                            <em>*Note: Conformal interval bounds surrogate emulation uncertainty relative to the MSMMT-FRP solver, not design safety margin.</em>
                         </div>
                     </div>
                     <div style="text-align:right;">
-                        <div style="color:#475569; font-size:0.82rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">FRP Strengthening Gain</div>
-                        <div style="color:#059669; font-size:1.8rem; font-weight:700; margin-top:2px;">
-                            +{frp_gain:.2f} kN·m
+                        <div style="color:#475569; font-size:0.82rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">Surrogate Model</div>
+                        <div style="color:#1e3a8a; font-size:1.15rem; font-weight:700; margin-top:4px;">
+                            {chosen_model}
                         </div>
-                        <div style="color:#2563eb; font-size:0.92rem; font-weight:600;">
-                            (+{frp_gain_pct:.1f}% over unstrengthened RC core)
+                        <div style="color:{'#059669' if pred_res['is_in_domain'] else '#dc2626'}; font-size:0.85rem; font-weight:600; margin-top:2px;">
+                            {'Inside Training Domain' if pred_res['is_in_domain'] else 'Exterior Extrapolation'}
                         </div>
                     </div>
                 </div>
@@ -952,49 +974,26 @@ with tab_design:
                 st.markdown('<div class="paper-card" style="padding:12px 14px 4px 14px; margin-bottom:12px;">', unsafe_allow_html=True)
                 fig_bar = go.Figure()
                 fig_bar.add_trace(go.Bar(
-                    x=['Design Capacity'],
-                    y=[Tu_unstr],
-                    name='RC Concrete + Steel Core',
-                    marker_color='#94a3b8',
-                    text=[f"{Tu_unstr:.1f} kN·m"] if Tu_unstr > 12 else [""],
-                    textposition='inside',
-                    insidetextanchor='middle',
+                    x=['Capacity Tu', 'Demand Td'],
+                    y=[Tu_pred, inp_Td],
+                    marker_color=['#2563eb' if sf >= 1.0 else '#dc2626', '#94a3b8'],
+                    error_y=dict(
+                        type='data',
+                        symmetric=False,
+                        array=[Tu_max - Tu_pred, 0],
+                        arrayminus=[Tu_pred - Tu_min, 0],
+                        color='#0f2942',
+                        thickness=1.5,
+                        width=6
+                    ),
+                    text=[f"{Tu_pred:.1f} kN·m", f"{inp_Td:.1f} kN·m"],
+                    textposition='outside',
                     textfont=dict(color='#0f172a', size=11, family='Inter, sans-serif')
                 ))
-                fig_bar.add_trace(go.Bar(
-                    x=['Design Capacity'],
-                    y=[frp_gain],
-                    name='FRP Strengthening Gain',
-                    marker_color='#059669',
-                    text=[f"+{frp_gain:.1f} kN·m"] if frp_gain > 8 else [""],
-                    textposition='inside',
-                    insidetextanchor='middle',
-                    textfont=dict(color='#ffffff', size=11, family='Inter, sans-serif')
-                ))
-                # Factored demand horizontal dashed reference line
-                fig_bar.add_hline(
-                    y=inp_Td,
-                    line_dash="dash",
-                    line_color="#dc2626",
-                    line_width=2,
-                    annotation_text=f"Demand Td = {inp_Td:.1f} kN·m",
-                    annotation_position="top left",
-                    annotation_font=dict(size=11, color="#dc2626", family='Inter, sans-serif')
-                )
-                # Total capacity annotation at the top of the stacked bar
-                fig_bar.add_annotation(
-                    x=0,
-                    y=Tu_pred,
-                    text=f"<b>Tu = {Tu_pred:.1f} kN·m</b>",
-                    showarrow=False,
-                    yshift=14,
-                    font=dict(size=12, color='#1e3a8a', family='Inter, sans-serif')
-                )
-                max_bar_y = max(Tu_pred, inp_Td) * 1.3
+                max_bar_y = max(Tu_max, inp_Td) * 1.25
                 fig_bar.update_layout(
-                    barmode='stack',
                     title=dict(
-                        text="<b>Capacity Breakdown vs Factored Demand</b>",
+                        text="<b>Capacity vs. Factored Demand</b>",
                         font=dict(size=13.5, color='#0f2942', family='Inter, sans-serif'),
                         x=0.02,
                         y=0.96
@@ -1006,14 +1005,7 @@ with tab_design:
                     font_color="#0f2942",
                     yaxis=dict(title="Torsional Moment (kN·m)", gridcolor="#f1f5f9", range=[0, max_bar_y]),
                     xaxis=dict(tickfont=dict(size=11, color='#0f2942')),
-                    legend=dict(
-                        orientation="h",
-                        yanchor="top",
-                        y=-0.22,
-                        xanchor="center",
-                        x=0.5,
-                        font=dict(size=10.5, color='#334155')
-                    )
+                    showlegend=False
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
@@ -1118,7 +1110,10 @@ with tab_design:
                     sweep_x = sweep_vals
                     x_lbl = "Section Width b (mm)"
                 elif sweep_var == "Section Height (h)":
-                    sweep_vals = np.linspace(150, 700, 25)
+                    # Truncate sweep to physical aspect ratio [1.0, 2.0] for the beam's width
+                    h_min_phys = max(150.0, inp_b * 1.0)
+                    h_max_phys = min(700.0, inp_b * 2.0)
+                    sweep_vals = np.linspace(h_min_phys, h_max_phys, 25)
                     current_val = inp_h
                     for v in sweep_vals:
                         vec = feat_vector.copy(); vec["h"] = v
@@ -1208,6 +1203,16 @@ with tab_batch:
                     q_95 = META["conformal_q"].get("Stacking", {}).get("95", 0.06)
                 batch_df["Tu_min_95%"] = np.exp(preds_log - q_95).round(2)
                 batch_df["Tu_max_95%"] = np.exp(preds_log + q_95).round(2)
+                
+                # Multivariate Mahalanobis Applicability Check
+                if META and "mahalanobis" in META:
+                    mu_b = np.array(META["mahalanobis"]["mean"])
+                    inv_cov_b = np.array(META["mahalanobis"]["inv_cov"])
+                    thresh_b = float(META["mahalanobis"].get("threshold", 18.307))
+                    diffs_b = X_b - mu_b
+                    d2_batch = np.sum(diffs_b @ inv_cov_b * diffs_b, axis=1)
+                    batch_df["Mahalanobis_D2"] = d2_batch.round(2)
+                    batch_df["Applicability_Domain"] = batch_df["Mahalanobis_D2"].apply(lambda v: "VALID" if v <= thresh_b else "EXTRAPOLATION")
                 
                 if "Td" in batch_df.columns:
                     batch_df["Safety_Factor"] = (batch_df["Tu_pred (kN·m)"] / batch_df["Td"]).round(2)
