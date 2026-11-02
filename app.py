@@ -903,7 +903,22 @@ with tab_design:
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            
+            # ---- Model scope and uncertainty disclaimer ----
+            st.markdown("""
+            <div class="paper-card" style="border-left:4px solid #92400e; background:#fffbeb; padding:12px 16px; margin-top:4px; margin-bottom:12px;">
+                <div style="font-size:0.80rem; font-weight:700; color:#92400e; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">
+                    Scope and uncertainty disclaimer
+                </div>
+                <div style="font-size:0.80rem; color:#78350f; line-height:1.5;">
+                    This tool emulates the MSMMT-FRP mechanics model for CFRP-strengthened RC beams within the sampled design domain.
+                    The predicted capacity reproduces the solver, not physical tests.
+                    The conformal interval quantifies the surrogate error relative to the solver (about 2%) and is not a design safety margin. Against independent experiments the
+                    surrogate error is larger, with a mean absolute percentage error of about 15% over 14 beams. Use for preliminary
+                    assessment only, not as a substitute for code-based design.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)  
+         
             # Capacity-to-Demand Check
             sf = Tu_pred / inp_Td if inp_Td > 0 else 1.0
             margin = Tu_pred - inp_Td
